@@ -12,10 +12,14 @@ namespace fs {
 
 struct FsPath {
     FsPath() = default;
-    constexpr FsPath(const auto& str) { From(str); }
+
+    constexpr FsPath(const FsPath& p) { From(p); }
+    constexpr FsPath(const char* str) { From(str); }
+    constexpr FsPath(const std::string& str) { From(str); }
+    constexpr FsPath(const std::string_view& str) { From(str); }
 
     constexpr void From(const FsPath& p) {
-        *this = p;
+        From(p.s);
     }
 
     constexpr void From(const char* str) {
@@ -38,6 +42,10 @@ struct FsPath {
 
     constexpr auto toString() const -> std::string {
         return s;
+    }
+
+    constexpr auto starts_with(std::string_view str) const -> bool {
+        return !strncasecmp(s, str.data(), str.length());
     }
 
     constexpr auto empty() const {
@@ -64,6 +72,11 @@ struct FsPath {
     constexpr operator std::string_view() const { return s; }
     constexpr char& operator[](std::size_t idx) { return s[idx]; }
     constexpr const char& operator[](std::size_t idx) const { return s[idx]; }
+
+    constexpr FsPath& operator=(const FsPath& p) noexcept {
+        From(p.s);
+        return *this;
+    }
 
     constexpr FsPath operator+(const FsPath& v) const noexcept {
         FsPath r{*this};
@@ -186,15 +199,14 @@ struct File {
     FsFile m_native{};
     std::FILE* m_stdio{};
     s64 m_stdio_off{};
-    // sadly, fatfs doesn't support fstat, so we have to manually
-    // stat the file to get it's size.
-    FsPath m_path{};
+    u32 m_mode{};
 };
 
 struct Dir {
     ~Dir();
 
     Result GetEntryCount(s64* out);
+    Result Read(s64 *total_entries, size_t max_entries, FsDirectoryEntry *buf);
     Result ReadAll(std::vector<FsDirectoryEntry>& buf);
     void Close();
 
@@ -276,6 +288,7 @@ struct Fs {
     virtual Result GetEntryType(const FsPath& path, FsDirEntryType* out) = 0;
     virtual Result GetFileTimeStampRaw(const FsPath& path, FsTimeStampRaw *out) = 0;
     virtual Result SetTimestamp(const FsPath& path, const FsTimeStampRaw* ts) = 0;
+    virtual Result Commit() = 0;
     virtual bool FileExists(const FsPath& path) = 0;
     virtual bool DirExists(const FsPath& path) = 0;
     virtual bool IsNative() const = 0;
@@ -351,6 +364,9 @@ struct FsStdio : Fs {
     Result SetTimestamp(const FsPath& path, const FsTimeStampRaw *ts) override {
         return fs::SetTimestamp(path, ts);
     }
+    Result Commit() override {
+        R_SUCCEED();
+    }
     bool FileExists(const FsPath& path) override {
         return fs::FileExists(path);
     }
@@ -386,10 +402,6 @@ struct FsNative : Fs {
         }
     }
 
-    Result Commit() {
-        return fsFsCommit(&m_fs);
-    }
-
     Result GetFreeSpace(const FsPath& path, s64* out) {
         return fsFsGetFreeSpace(&m_fs, path, out);
     }
@@ -397,36 +409,6 @@ struct FsNative : Fs {
     Result GetTotalSpace(const FsPath& path, s64* out) {
         return fsFsGetTotalSpace(&m_fs, path, out);
     }
-
-    // Result OpenDirectory(const FsPath& path, u32 mode, FsDir *out) {
-    //     return fsFsOpenDirectory(&m_fs, path, mode, out);
-    // }
-
-    // void DirClose(FsDir *d) {
-    //     fsDirClose(d);
-    // }
-
-    // Result DirGetEntryCount(FsDir *d, s64* out) {
-    //     return fsDirGetEntryCount(d, out);
-    // }
-
-    // Result DirGetEntryCount(const FsPath& path, u32 mode, s64* out) {
-    //     FsDir d;
-    //     R_TRY(OpenDirectory(path, mode, &d));
-    //     ON_SCOPE_EXIT(DirClose(&d));
-    //     return DirGetEntryCount(&d, out);
-    // }
-
-    // Result DirRead(FsDir *d, s64 *total_entries, size_t max_entries, FsDirectoryEntry *buf) {
-    //     return fsDirRead(d, total_entries, max_entries, buf);
-    // }
-
-    // Result DirRead(const FsPath& path, u32 mode, s64 *total_entries, size_t max_entries, FsDirectoryEntry *buf) {
-    //     FsDir d;
-    //     R_TRY(OpenDirectory(path, mode, &d));
-    //     ON_SCOPE_EXIT(DirClose(&d));
-    //     return DirRead(&d, total_entries, max_entries, buf);
-    // }
 
     virtual bool IsFsActive() {
         return serviceIsActive(&m_fs.s);
@@ -471,6 +453,9 @@ struct FsNative : Fs {
     }
     Result SetTimestamp(const FsPath& path, const FsTimeStampRaw *ts) override {
         return fs::SetTimestamp(&m_fs, path, ts);
+    }
+    Result Commit() override {
+        return fsFsCommit(&m_fs);
     }
     bool FileExists(const FsPath& path) override {
         return fs::FileExists(&m_fs, path);

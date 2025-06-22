@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.13)
 
-set(sphaira_VERSION 0.12.0)
+set(sphaira_VERSION 0.13.3)
 
 project(sphaira
     VERSION ${sphaira_VERSION}
@@ -45,9 +45,11 @@ add_executable(sphaira
     source/ui/menus/ghdl.cpp
     source/ui/menus/usb_menu.cpp
     source/ui/menus/ftp_menu.cpp
+    source/ui/menus/mtp_menu.cpp
     source/ui/menus/gc_menu.cpp
     source/ui/menus/game_menu.cpp
     source/ui/menus/grid_menu_base.cpp
+    source/ui/menus/install_stream_menu_base.cpp
 
     source/ui/error_box.cpp
     source/ui/notification.cpp
@@ -79,7 +81,9 @@ add_executable(sphaira
     source/hasher.cpp
     source/i18n.cpp
     source/ftpsrv_helper.cpp
+    source/haze_helper.cpp
     source/threaded_file_transfer.cpp
+    source/title_info.cpp
     source/minizip_helper.cpp
 
     source/usb/base.cpp
@@ -160,7 +164,7 @@ FetchContent_Declare(ftpsrv
 
 FetchContent_Declare(libhaze
     GIT_REPOSITORY https://github.com/ITotalJustice/libhaze.git
-    GIT_TAG 8e16df2
+    GIT_TAG af69c0a
 )
 
 FetchContent_Declare(libpulsar
@@ -196,7 +200,7 @@ FetchContent_Declare(zstd
 
 FetchContent_Declare(libusbhsfs
     GIT_REPOSITORY https://github.com/ITotalJustice/libusbhsfs.git
-    GIT_TAG db2bf2a
+    GIT_TAG d0a973e
 )
 
 FetchContent_Declare(libnxtc
@@ -205,8 +209,8 @@ FetchContent_Declare(libnxtc
 )
 
 FetchContent_Declare(nvjpg
-    GIT_REPOSITORY https://github.com/averne/oss-nvjpg.git
-    GIT_TAG fdcaba8
+    GIT_REPOSITORY https://github.com/ITotalJustice/oss-nvjpg.git
+    GIT_TAG 45680e7
 )
 
 set(USE_NEW_ZSTD ON)

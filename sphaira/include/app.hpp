@@ -227,6 +227,10 @@ public:
 
                     AccountProfileBase base;
                     if (R_SUCCEEDED(accountProfileGet(&profile, nullptr, &base))) {
+                        // sometimes the uid for the acc can differ to the base.
+                        base.uid = uids[i];
+                        log_write("[ACC] found uid: 0x%016lX%016lX\n", uids[i].uid[0], uids[i].uid[1]);
+                        log_write("[ACC] base  uid: 0x%016lX%016lX\n", base.uid.uid[0], base.uid.uid[1]);
                         out.emplace_back(base);
                     }
                 }
@@ -303,6 +307,7 @@ public:
     option::OptionBool m_skip_rsa_header_fixed_key_verify{INI_SECTION, "skip_rsa_header_fixed_key_verify", false};
     option::OptionBool m_skip_rsa_npdm_fixed_key_verify{INI_SECTION, "skip_rsa_npdm_fixed_key_verify", false};
     option::OptionBool m_ignore_distribution_bit{INI_SECTION, "ignore_distribution_bit", false};
+    option::OptionBool m_convert_to_common_ticket{INI_SECTION, "convert_to_common_ticket", true};
     option::OptionBool m_convert_to_standard_crypto{INI_SECTION, "convert_to_standard_crypto", false};
     option::OptionBool m_lower_master_key{INI_SECTION, "lower_master_key", false};
     option::OptionBool m_lower_system_version{INI_SECTION, "lower_system_version", false};
@@ -313,6 +318,7 @@ public:
     option::OptionBool m_dump_trim_xci{"dump", "trim_xci", false};
     option::OptionBool m_dump_label_trim_xci{"dump", "label_trim_xci", false};
     option::OptionBool m_dump_usb_transfer_stream{"dump", "usb_transfer_stream", true};
+    option::OptionBool m_dump_convert_to_common_ticket{"dump", "convert_to_common_ticket", true};
 
     // todo: move this into it's own menu
     option::OptionLong m_text_scroll_speed{"accessibility", "text_scroll_speed", 1}; // normal

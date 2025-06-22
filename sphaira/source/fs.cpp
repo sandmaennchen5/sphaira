@@ -112,13 +112,17 @@ FsPath AppendPath(const FsPath& root_path, const FsPath& _file_path) {
 Result CreateFile(FsFileSystem* fs, const FsPath& path, u64 size, u32 option, bool ignore_read_only) {
     R_UNLESS(ignore_read_only || !is_read_only_root(path), Result_FsReadOnly);
 
-    return fsFsCreateFile(fs, path, size, option);
+    R_TRY(fsFsCreateFile(fs, path, size, option));
+    fsFsCommit(fs);
+    R_SUCCEED();
 }
 
 Result CreateDirectory(FsFileSystem* fs, const FsPath& path, bool ignore_read_only) {
     R_UNLESS(ignore_read_only || !is_read_only_root(path), Result_FsReadOnly);
 
-    return fsFsCreateDirectory(fs, path);
+    R_TRY(fsFsCreateDirectory(fs, path));
+    fsFsCommit(fs);
+    R_SUCCEED();
 }
 
 Result CreateDirectoryRecursively(FsFileSystem* fs, const FsPath& _path, bool ignore_read_only) {
@@ -180,38 +184,49 @@ Result CreateDirectoryRecursivelyWithPath(FsFileSystem* fs, const FsPath& _path,
 
     FsPath new_path{};
     std::snprintf(new_path, sizeof(new_path), "%.*s", (int)(last_slash - _path.s), _path.s);
-    return CreateDirectoryRecursively(fs, new_path, ignore_read_only);
+    R_TRY(CreateDirectoryRecursively(fs, new_path, ignore_read_only));
+    R_SUCCEED();
 }
 
 Result DeleteFile(FsFileSystem* fs, const FsPath& path, bool ignore_read_only) {
     R_UNLESS(ignore_read_only || !is_read_only(path), Result_FsReadOnly);
-    return fsFsDeleteFile(fs, path);
+    R_TRY(fsFsDeleteFile(fs, path));
+    fsFsCommit(fs);
+    R_SUCCEED();
 }
 
 Result DeleteDirectory(FsFileSystem* fs, const FsPath& path, bool ignore_read_only) {
     R_UNLESS(ignore_read_only || !is_read_only(path), Result_FsReadOnly);
 
-    return fsFsDeleteDirectory(fs, path);
+    R_TRY(fsFsDeleteDirectory(fs, path));
+    fsFsCommit(fs);
+    R_SUCCEED();
 }
 
 Result DeleteDirectoryRecursively(FsFileSystem* fs, const FsPath& path, bool ignore_read_only) {
     R_UNLESS(ignore_read_only || !is_read_only(path), Result_FsReadOnly);
 
-    return fsFsDeleteDirectoryRecursively(fs, path);
+    R_TRY(fsFsDeleteDirectoryRecursively(fs, path));
+    fsFsCommit(fs);
+    R_SUCCEED();
 }
 
 Result RenameFile(FsFileSystem* fs, const FsPath& src, const FsPath& dst, bool ignore_read_only) {
     R_UNLESS(ignore_read_only || !is_read_only(src), Result_FsReadOnly);
     R_UNLESS(ignore_read_only || !is_read_only(dst), Result_FsReadOnly);
 
-    return fsFsRenameFile(fs, src, dst);
+    R_TRY(fsFsRenameFile(fs, src, dst));
+    fsFsCommit(fs);
+    R_SUCCEED();
 }
 
 Result RenameDirectory(FsFileSystem* fs, const FsPath& src, const FsPath& dst, bool ignore_read_only) {
     R_UNLESS(ignore_read_only || !is_read_only(src), Result_FsReadOnly);
     R_UNLESS(ignore_read_only || !is_read_only(dst), Result_FsReadOnly);
 
-    return fsFsRenameDirectory(fs, src, dst);
+    R_TRY(fsFsRenameDirectory(fs, src, dst));
+    fsFsCommit(fs);
+    R_SUCCEED();
 }
 
 Result GetEntryType(FsFileSystem* fs, const FsPath& path, FsDirEntryType* out) {
@@ -263,6 +278,7 @@ Result write_entire_file(FsFileSystem* _fs, const FsPath& path, const std::vecto
 
     FsNative fs{_fs, false, ignore_read_only};
     R_TRY(fs.GetFsOpenResult());
+    ON_SCOPE_EXIT(fs.Commit());
 
     if (auto rc = fs.CreateFile(path, in.size(), 0); R_FAILED(rc) && rc != FsError_PathAlreadyExists) {
         return rc;
@@ -484,6 +500,7 @@ Result copy_entire_file(const FsPath& dst, const FsPath& src, bool ignore_read_o
 
 Result OpenFile(fs::Fs* fs, const fs::FsPath& path, u32 mode, File* f) {
     f->m_fs = fs;
+    f->m_mode = mode;
 
     if (f->m_fs->IsNative()) {
         auto fs = (fs::FsNative*)f->m_fs;
@@ -500,7 +517,6 @@ Result OpenFile(fs::Fs* fs, const fs::FsPath& path, u32 mode, File* f) {
         }
 
         R_UNLESS(f->m_stdio, Result_FsUnknownStdioError);
-        std::strcpy(f->m_path, path);
     }
 
     R_SUCCEED();
@@ -580,17 +596,7 @@ Result File::GetSize(s64* out) {
         R_TRY(fsFileGetSize(&m_native, out));
     } else {
         struct stat st;
-        const auto fd = fileno(m_stdio);
-        bool did_stat{};
-
-        if (fd && !fstat(fd, &st)) {
-            did_stat = true;
-        }
-
-        if (!did_stat) {
-            R_UNLESS(!lstat(m_path, &st), Result_FsUnknownStdioError);
-        }
-
+        R_UNLESS(!fstat(fileno(m_stdio), &st), Result_FsUnknownStdioError);
         *out = st.st_size;
     }
 
@@ -605,6 +611,9 @@ void File::Close() {
     if (m_fs->IsNative()) {
         if (serviceIsActive(&m_native.s)) {
             fsFileClose(&m_native);
+            if (m_mode & FsOpenMode_Write) {
+                m_fs->Commit();
+            }
             m_native = {};
         }
     } else {
@@ -697,6 +706,47 @@ Result Dir::GetEntryCount(s64* out) {
 
         // NOTE: this will *not* work for native mounted folders!!!
         rewinddir(m_stdio);
+    }
+
+    R_SUCCEED();
+}
+
+Result Dir::Read(s64 *total_entries, size_t max_entries, FsDirectoryEntry *buf) {
+    R_UNLESS(m_fs, Result_FsNotActive);
+    *total_entries = 0;
+
+    if (m_fs->IsNative()) {
+        R_TRY(fsDirRead(&m_native, total_entries, max_entries, buf));
+    } else {
+        while (auto d = readdir(m_stdio)) {
+            if (!std::strcmp(d->d_name, ".") || !std::strcmp(d->d_name, "..")) {
+                continue;
+            }
+
+            FsDirectoryEntry entry{};
+
+            if (d->d_type == DT_DIR) {
+                if (!(m_mode & FsDirOpenMode_ReadDirs)) {
+                    continue;
+                }
+                entry.type = FsDirEntryType_Dir;
+            } else if (d->d_type == DT_REG) {
+                if (!(m_mode & FsDirOpenMode_ReadFiles)) {
+                    continue;
+                }
+                entry.type = FsDirEntryType_File;
+            } else {
+                log_write("[FS] WARNING: unknown type when reading dir: %u\n", d->d_type);
+                continue;
+            }
+
+            std::strcpy(entry.name, d->d_name);
+            std::memcpy(&buf[*total_entries], &entry, sizeof(*buf));
+            *total_entries = *total_entries + 1;
+            if (*total_entries >= max_entries) {
+                break;
+            }
+        }
     }
 
     R_SUCCEED();

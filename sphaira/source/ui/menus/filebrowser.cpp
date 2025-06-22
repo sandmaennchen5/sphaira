@@ -728,10 +728,12 @@ void FsView::UnzipFiles(fs::FsPath dir_path) {
     }
 
     App::Push(std::make_shared<ui::ProgressBox>(0, "Extracting "_i18n, "", [this, dir_path, targets](auto pbox) -> Result {
+        const auto is_hdd_fs = m_fs->Root().starts_with("ums");
+
         for (auto& e : targets) {
             pbox->SetTitle(e.GetName());
             const auto zip_out = GetNewPath(e);
-            R_TRY(thread::TransferUnzipAll(pbox, zip_out, m_fs.get(), dir_path));
+            R_TRY(thread::TransferUnzipAll(pbox, zip_out, m_fs.get(), dir_path, nullptr, is_hdd_fs ? thread::Mode::SingleThreaded : thread::Mode::SingleThreadedIfSmaller));
         }
 
         R_SUCCEED();
@@ -786,6 +788,7 @@ void FsView::ZipFiles(fs::FsPath zip_out) {
     App::Push(std::make_shared<ui::ProgressBox>(0, "Compressing "_i18n, "", [this, zip_out, targets](auto pbox) -> Result {
         const auto t = std::time(NULL);
         const auto tm = std::localtime(&t);
+        const auto is_hdd_fs = m_fs->Root().starts_with("ums");
 
         // pre-calculate the time rather than calculate it in the loop.
         zip_fileinfo zip_info{};
@@ -825,7 +828,7 @@ void FsView::ZipFiles(fs::FsPath zip_out) {
             }
             ON_SCOPE_EXIT(zipCloseFileInZip(zfile));
 
-            return thread::TransferZip(pbox, zfile, m_fs.get(), file_path);
+            return thread::TransferZip(pbox, zfile, m_fs.get(), file_path, nullptr, is_hdd_fs ? thread::Mode::SingleThreaded : thread::Mode::SingleThreadedIfSmaller);
         };
 
         for (auto& e : targets) {
@@ -1180,7 +1183,7 @@ void FsView::OnDeleteCallback() {
                 }
             }
 
-            return DeleteAllCollections(pbox, src_fs, selected, collections);
+            return DeleteAllCollectionsWithSelected(pbox, src_fs, selected, collections);
         }, [this](Result rc){
             App::PushErrorBox(rc, "Failed to, TODO: add message here"_i18n);
 
@@ -1207,6 +1210,7 @@ void FsView::OnPasteCallback() {
         App::Push(std::make_shared<ProgressBox>(0, "Pasting"_i18n, "", [this](auto pbox) -> Result {
             auto& selected = m_menu->m_selected;
             auto src_fs = selected.m_view->GetFs();
+            const auto is_same_fs = selected.SameFs(this);
 
             if (selected.SameFs(this) && selected.m_type == SelectedType::Cut) {
                 for (const auto& p : selected.m_files) {
@@ -1271,7 +1275,7 @@ void FsView::OnPasteCallback() {
                     } else {
                         pbox->SetTitle(p.name);
                         pbox->NewTransfer("Copying "_i18n + src_path);
-                        R_TRY(pbox->CopyFile(src_fs, m_fs.get(), src_path, dst_path));
+                        R_TRY(pbox->CopyFile(src_fs, m_fs.get(), src_path, dst_path, is_same_fs));
                         R_TRY(on_paste_file(src_path, dst_path));
                     }
                 }
@@ -1301,7 +1305,7 @@ void FsView::OnPasteCallback() {
 
                         pbox->SetTitle(p.name);
                         pbox->NewTransfer("Copying "_i18n + src_path);
-                        R_TRY(pbox->CopyFile(src_fs, m_fs.get(), src_path, dst_path));
+                        R_TRY(pbox->CopyFile(src_fs, m_fs.get(), src_path, dst_path, is_same_fs));
                         R_TRY(on_paste_file(src_path, dst_path));
                     }
                 }
@@ -1313,7 +1317,7 @@ void FsView::OnPasteCallback() {
                 // the folders cannot be deleted until the end as they have to be removed in
                 // reverse order so that the folder can be deleted (it must be empty).
                 if (selected.m_type == SelectedType::Cut) {
-                    R_TRY(DeleteAllCollections(pbox, src_fs, selected, collections, FsDirOpenMode_ReadDirs));
+                    R_TRY(DeleteAllCollectionsWithSelected(pbox, src_fs, selected, collections, FsDirOpenMode_ReadDirs));
                 }
             }
 
@@ -1424,7 +1428,7 @@ auto FsView::get_collections(const fs::FsPath& path, const fs::FsPath& parent_na
     return get_collections(m_fs.get(), path, parent_name, out, inc_size);
 }
 
-static Result DeleteAllCollections(ProgressBox* pbox, fs::Fs* fs, const SelectedStash& selected, const FsDirCollections& collections, u32 mode = FsDirOpenMode_ReadDirs|FsDirOpenMode_ReadFiles) {
+Result FsView::DeleteAllCollections(ProgressBox* pbox, fs::Fs* fs, const FsDirCollections& collections, u32 mode) {
     // delete everything in collections, reversed
     for (const auto& c : std::views::reverse(collections)) {
         const auto delete_func = [&](auto& array) -> Result {
@@ -1452,6 +1456,12 @@ static Result DeleteAllCollections(ProgressBox* pbox, fs::Fs* fs, const Selected
         R_TRY(delete_func(c.files));
         R_TRY(delete_func(c.dirs));
     }
+
+    R_SUCCEED();
+}
+
+static Result DeleteAllCollectionsWithSelected(ProgressBox* pbox, fs::Fs* fs, const SelectedStash& selected, const FsDirCollections& collections, u32 mode = FsDirOpenMode_ReadDirs|FsDirOpenMode_ReadFiles) {
+    R_TRY(FsView::DeleteAllCollections(pbox, fs, collections, mode));
 
     for (const auto& p : selected.m_files) {
         pbox->Yield();
@@ -1766,7 +1776,7 @@ void FsView::DisplayAdvancedOptions() {
     options->Add(std::make_shared<SidebarEntryArray>("Mount"_i18n, mount_items, [this, fs_entries](s64& index_out){
         App::PopToMenu();
         SetFs(fs_entries[index_out].root, fs_entries[index_out]);
-    }, m_fs_entry.name));
+    }, i18n::get(m_fs_entry.name)));
 
     options->Add(std::make_shared<SidebarEntryCallback>("Create File"_i18n, [this](){
         std::string out;
@@ -1880,21 +1890,19 @@ void Menu::Update(Controller* controller, TouchInfo* touch) {
     // workaround the buttons not being display properly.
     // basically, inherit all actions from the view, draw them,
     // then restore state after.
-    const auto actions_copy = GetActions();
-    ON_SCOPE_EXIT(m_actions = actions_copy);
-    m_actions.insert_range(view->GetActions());
+    const auto view_actions = view->GetActions();
+    m_actions.insert_range(view_actions);
+    ON_SCOPE_EXIT(RemoveActions(view_actions));
 
     MenuBase::Update(controller, touch);
     view->Update(controller, touch);
 }
 
 void Menu::Draw(NVGcontext* vg, Theme* theme) {
-    // workaround the buttons not being display properly.
-    // basically, inherit all actions from the view, draw them,
-    // then restore state after.
-    const auto actions_copy = GetActions();
-    ON_SCOPE_EXIT(m_actions = actions_copy);
-    m_actions.insert_range(view->GetActions());
+    // see Menu::Update().
+    const auto view_actions = view->GetActions();
+    m_actions.insert_range(view_actions);
+    ON_SCOPE_EXIT(RemoveActions(view_actions));
 
     MenuBase::Draw(vg, theme);
 
